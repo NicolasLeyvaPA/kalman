@@ -23,7 +23,7 @@ env/
 .ipynb_checkpoints/
 
 # Data (cached API responses and database)
-data/cache/
+**/data/cache/
 data/*.db
 data/*.csv
 *.db
