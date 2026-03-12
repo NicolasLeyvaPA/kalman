@@ -12,6 +12,32 @@
 \usepackage{subcaption}
 \usepackage{natbib}
 \usepackage{microtype}
+\usepackage{listings}
+\usepackage{xcolor}
+
+% Python code style
+\lstdefinestyle{python}{
+    language=Python,
+    basicstyle=\small\ttfamily,
+    keywordstyle=\color{blue}\bfseries,
+    stringstyle=\color{red!70!black},
+    commentstyle=\color{green!50!black}\itshape,
+    numberstyle=\tiny\color{gray},
+    numbers=left,
+    numbersep=5pt,
+    frame=single,
+    framerule=0.4pt,
+    rulecolor=\color{gray!50},
+    backgroundcolor=\color{gray!5},
+    breaklines=true,
+    showstringspaces=false,
+    tabsize=4,
+    xleftmargin=1.5em,
+    framexleftmargin=1.5em,
+    aboveskip=0.8em,
+    belowskip=0.8em,
+    morekeywords={self, None, True, False, float, np, tuple},
+}
 
 \bibliographystyle{plainnat}
 
@@ -199,6 +225,175 @@ with threshold $h = 4.0$.
 \end{equation}
 
 \textbf{Autocorrelation}: Detects serial correlation at lag 1, which should be approximately zero under correct model specification.
+
+% ══════════════════════════════════════════════════════════════════
+\section{Implementation}
+
+All filter variants are implemented from scratch in Python using only NumPy for numerical computation, with no external filtering libraries. The full codebase is organized into modular components: \texttt{src/filters/} contains the filter implementations, \texttt{src/data/} handles synthetic data generation and data models, and \texttt{src/analysis/} provides evaluation and visualization tools.
+
+\subsection{Scalar Kalman Filter Core}
+
+The scalar Kalman filter is implemented as a class with separate \texttt{predict()} and \texttt{update()} methods, following the standard two-step recursion. The \texttt{step()} method combines both into a single predict-update cycle:
+
+\begin{lstlisting}[style=python, caption={Core predict-update cycle of the scalar Kalman filter (\texttt{scalar\_kalman.py}).}]
+def predict(self):
+    """Project state and covariance forward."""
+    x_prior = self.x
+    P_prior = self.P + self.Q
+    return x_prior, P_prior
+
+def update(self, z, x_prior, P_prior):
+    """Incorporate a new observation."""
+    innovation = z - x_prior          # prediction error
+    S = P_prior + self.R              # innovation covariance
+    K = P_prior / (S + EPSILON)       # Kalman gain
+    x_post = x_prior + K * innovation # state update
+    P_post = (1.0 - K) * P_prior      # covariance update
+    return x_post, P_post, K, innovation, S
+\end{lstlisting}
+
+The predict step is trivial under the random walk model: the predicted state equals the current estimate, and uncertainty grows by $Q$. The update step computes the Kalman gain $K = P_{\text{prior}} / (P_{\text{prior}} + R)$, which automatically balances trust between prediction and observation. The \texttt{EPSILON} guard prevents division by zero when $S$ is vanishingly small.
+
+Running the filter over a full observation sequence is a simple loop:
+
+\begin{lstlisting}[style=python, caption={Batch filtering over an observation sequence.}]
+def filter(self, observations):
+    n = len(observations)
+    states = np.zeros(n)
+    for t in range(n):
+        state = self.step(observations[t])
+        states[t] = state.x
+    return states
+\end{lstlisting}
+
+\subsection{Adaptive Innovation Monitoring}
+
+The adaptive filter extends the scalar filter by monitoring normalized innovations $\tilde{y}_t = y_t / \sqrt{S_t}$ and inflating process noise when a surprise is detected:
+
+\begin{lstlisting}[style=python, caption={Regime detection and Q inflation in the adaptive filter (\texttt{adaptive\_kalman.py}).}]
+# Normalized innovation
+normalized = innovation / (np.sqrt(S) + EPSILON)
+
+# Check for regime change
+if abs(normalized) > self.threshold:
+    self._current_inflation = self.inflation_factor
+    # Recompute with inflated Q
+    Q_eff = self.Q_base * self._current_inflation
+    P_prior = self.P + Q_eff
+    S = P_prior + R
+else:
+    # Decay inflation back to baseline
+    if self._current_inflation > 1.0:
+        self._current_inflation = max(
+            1.0,
+            1.0 + (self._current_inflation - 1.0) * self.decay,
+        )
+\end{lstlisting}
+
+When $|\tilde{y}_t| > \tau$ (default 2.5), the filter multiplies $Q$ by an inflation factor (default $15\times$), dramatically increasing uncertainty and allowing the state estimate to jump toward the new observation. On subsequent steps where no surprise is detected, the inflation decays exponentially back to 1.0 via the decay rate $\lambda = 0.8$.
+
+\subsection{Logit-Space Transform}
+
+The logit filter transforms observations to log-odds space before filtering, then transforms estimates back. The critical detail is the noise transformation via the delta method:
+
+\begin{lstlisting}[style=python, caption={Logit-space filtering with delta method noise transform (\texttt{logit\_kalman.py}).}]
+def step(self, z_prob):
+    # Transform observation to logit space
+    z_logit = logit(z_prob)
+
+    # Transform noise via delta method: R_logit = R / (p(1-p))^2
+    R_logit = self.R_prob / (z_prob * (1 - z_prob)) ** 2
+
+    # Standard Kalman update in logit space
+    innovation = z_logit - self.x_logit
+    S = self.P_logit + self.Q_logit + R_logit
+    K = (self.P_logit + self.Q_logit) / (S + EPSILON)
+    self.x_logit += K * innovation
+
+    # Transform back: sigmoid guarantees [0, 1]
+    x_prob = 1.0 / (1.0 + np.exp(-self.x_logit))
+
+    # Asymmetric confidence intervals
+    std = np.sqrt(self.P_logit) * 2.0
+    upper = sigmoid(self.x_logit + std)  # always < 1
+    lower = sigmoid(self.x_logit - std)  # always > 0
+    return x_prob, lower, upper
+\end{lstlisting}
+
+The delta method factor $(p(1-p))^{-2}$ makes observation noise level-dependent: near $p = 0.5$ the transform is mild ($R_{\text{logit}} \approx 16 R_{\text{prob}}$), but near $p = 0.95$ it amplifies by $\sim\!400\times$, correctly reflecting that small price changes near the boundaries correspond to large changes in log-odds.
+
+\subsection{Multivariate Filter with Partial Observations}
+
+The multivariate filter tracks $n$ correlated markets simultaneously. A key implementation detail is the handling of missing observations via a selection matrix $\mathbf{H}_t$:
+
+\begin{lstlisting}[style=python, caption={Multivariate update with partial observations and Joseph form (\texttt{multivariate\_kalman.py}).}]
+def update(self, z, observed_mask):
+    x_prior, P_prior = self.predict()
+
+    # Build selection matrix H for observed markets
+    obs_idx = np.where(observed_mask)[0]
+    H = np.zeros((len(obs_idx), self.n))
+    for i, idx in enumerate(obs_idx):
+        H[i, idx] = 1.0
+
+    # Standard Kalman equations with H
+    z_obs = z[obs_idx]
+    R_obs = self.R[np.ix_(obs_idx, obs_idx)]
+    innovation = z_obs - H @ x_prior
+    S = H @ P_prior @ H.T + R_obs
+    K = P_prior @ H.T @ np.linalg.solve(S, np.eye(len(obs_idx)))
+
+    x_post = x_prior + K @ innovation
+
+    # Joseph form for numerical stability
+    IKH = np.eye(self.n) - K @ H
+    P_post = IKH @ P_prior @ IKH.T + K @ R_obs @ K.T
+    return x_post, P_post
+\end{lstlisting}
+
+When a market is unobserved, its row is simply excluded from $\mathbf{H}_t$. The Kalman gain still updates the unobserved market's estimate using the cross-correlations in $\mathbf{P}$---this is how the multivariate filter propagates information across correlated markets.
+
+\subsection{Dynamic Observation Noise from Microstructure}
+
+The observation noise $R_t$ is estimated in real time from four market microstructure features:
+
+\begin{lstlisting}[style=python, caption={Composite observation noise estimation (\texttt{noise\_estimation.py}).}]
+def compute_observation_noise(obs):
+    R_spread = (obs.spread / 2.0) ** 2
+    R_depth = 1e-3 / (np.log(1 + obs.total_depth) + EPSILON)
+    R_imbalance = (obs.imbalance - 0.5) ** 2
+    R_stale = 5e-4 / (1.0 + obs.num_trades_1h)
+
+    R_t = (0.40 * R_spread + 0.25 * R_depth
+         + 0.20 * R_imbalance + 0.15 * R_stale)
+    return np.clip(R_t, 1e-6, 0.1)
+\end{lstlisting}
+
+Each component captures a different source of price uncertainty: the spread-based noise reflects midpoint ambiguity, depth noise captures susceptibility to price manipulation in thin books, imbalance noise reflects directional pressure, and stale noise penalizes low-activity markets where quotes may not reflect current information. The composite weights (0.40, 0.25, 0.20, 0.15) are hyperparameters that would be calibrated via cross-validation in a production setting.
+
+\subsection{Maximum Likelihood Parameter Estimation}
+
+The MLE procedure maximizes the innovation log-likelihood (Equation~\ref{eq:mle}) using L-BFGS-B optimization in log-space:
+
+\begin{lstlisting}[style=python, caption={MLE parameter estimation (\texttt{parameter\_estimation.py}).}]
+def estimate_parameters(observations, Q0=1e-4, R0=1e-3):
+    def neg_log_likelihood(log_params):
+        Q, R = np.exp(log_params[0]), np.exp(log_params[1])
+        kf = ScalarKalmanFilter(Q=Q, R=R)
+        result = kf.filter(observations)
+        innovations = result.innovations[10:]  # skip warm-up
+        S = result.innovation_covariances[10:]
+        ll = -0.5 * np.sum(np.log(2*np.pi*S) + innovations**2 / S)
+        return -ll
+
+    result = minimize(neg_log_likelihood,
+                      x0=[np.log(Q0), np.log(R0)],
+                      method='L-BFGS-B',
+                      bounds=[(-10, 0), (-10, 0)])
+    return np.exp(result.x[0]), np.exp(result.x[1])
+\end{lstlisting}
+
+Optimization is performed in log-space ($\log Q$, $\log R$) to enforce positivity without constraints. The first 10 observations are excluded as a warm-up period while the filter is still converging from its initial conditions. The L-BFGS-B optimizer with bounds $[-10, 0]$ in log-space constrains the search to $Q, R \in [10^{-10}, 1]$.
 
 % ══════════════════════════════════════════════════════════════════
 \section{Experimental Setup}
