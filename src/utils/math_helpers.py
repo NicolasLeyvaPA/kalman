@@ -95,12 +95,12 @@ def steady_state_gain(Q: float, R: float) -> float:
 
     Notes
     -----
-    K_ss = (-Q + sqrt(Q^2 + 4*Q*R)) / (2*R)
+    P_ss = (Q + sqrt(Q^2 + 4*Q*R)) / 2, then K_ss = P_ss / (P_ss + R)
 
     Derived from the algebraic Riccati equation for the scalar case:
     P_ss = P_ss + Q - P_ss^2 / (P_ss + R)
     K_ss = P_ss / (P_ss + R)
     """
     discriminant = Q ** 2 + 4.0 * Q * R
-    P_ss = (-Q + np.sqrt(discriminant)) / 2.0
+    P_ss = (Q + np.sqrt(discriminant)) / 2.0
     return safe_divide(P_ss, P_ss + R)
