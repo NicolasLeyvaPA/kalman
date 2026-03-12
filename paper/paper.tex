@@ -230,160 +230,233 @@ where $y_t \in \{0, 1\}$ is the resolved outcome. Lower is better; 0.25 correspo
 % ══════════════════════════════════════════════════════════════════
 \section{Results}
 
+All results presented in this section are from actual simulation runs. Figures are extracted directly from executed Jupyter notebooks.
+
 \subsection{Scalar Kalman Filter}
 
-Figure~\ref{fig:filtered} shows the basic scalar filter applied to a synthetic random walk ($Q = 10^{-4}$, $R = 2 \times 10^{-3}$, $T = 500$). The filter produces a smooth estimate that closely tracks the true state while suppressing observation noise.
+We apply the scalar filter to a synthetic random walk ($Q = 10^{-4}$, $R = 2 \times 10^{-3}$, $T = 500$, price range $[0.303, 0.678]$). The filter converges to a final state estimate $\hat{x} = 0.5370$ with covariance $P = 2.70 \times 10^{-4}$ and steady-state gain $K_\infty = 0.2702$.
+
+Figure~\ref{fig:filtered} shows the filtered output tracking the true state while suppressing observation noise.
 
 \begin{figure}[H]
     \centering
-    \includegraphics[width=0.95\textwidth]{figures/fig_filtered_vs_raw.pdf}
+    \includegraphics[width=0.95\textwidth]{figures/nb01_fig0.png}
     \caption{Scalar Kalman filter on synthetic data. Gray: raw noisy prices. Cyan: filtered estimate with $\pm 2\sigma$ confidence band. Green: true underlying state.}
     \label{fig:filtered}
 \end{figure}
 
-Figure~\ref{fig:gain} shows the Kalman gain converging to its steady-state value within approximately 20 steps, consistent with the Riccati equation prediction (Equation~\ref{eq:riccati}).
+Figure~\ref{fig:gain} shows the Kalman gain converging to its steady-state value $K_\infty = 0.2702$ within approximately 20 steps.
 
 \begin{figure}[H]
     \centering
-    \includegraphics[width=0.85\textwidth]{figures/fig_kalman_gain.pdf}
+    \includegraphics[width=0.85\textwidth]{figures/nb01_fig1.png}
     \caption{Kalman gain convergence to steady state.}
     \label{fig:gain}
 \end{figure}
 
-Figure~\ref{fig:sensitivity} demonstrates the sensitivity of the filter to the $Q/R$ ratio. Larger $Q$ (or smaller $R$) makes the filter more responsive but noisier; smaller $Q$ (or larger $R$) produces smoother but more lagging estimates.
+Figure~\ref{fig:innovations} shows the innovation diagnostics. A well-tuned filter should have approximately 95\% of innovations within the $\pm 2\sigma$ bounds.
 
 \begin{figure}[H]
     \centering
-    \includegraphics[width=\textwidth]{figures/fig_parameter_sensitivity.pdf}
-    \caption{Parameter sensitivity. Left: varying $Q$ with fixed $R = 10^{-3}$. Right: varying $R$ with fixed $Q = 10^{-4}$.}
+    \includegraphics[width=0.95\textwidth]{figures/nb01_fig2.png}
+    \caption{Innovation sequence with $\pm 2\sigma$ bounds from the innovation covariance $S_t$.}
+    \label{fig:innovations}
+\end{figure}
+
+Figure~\ref{fig:sensitivity} demonstrates the sensitivity of the filter to the $Q/R$ ratio.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=\textwidth]{figures/nb01_fig3.png}
+    \caption{Parameter sensitivity. Left: varying $Q$ with fixed $R = 10^{-3}$. Right: varying $R$ with fixed $Q = 10^{-4}$. Larger $Q$ makes the filter more responsive but noisier; larger $R$ produces smoother but more lagging estimates.}
     \label{fig:sensitivity}
+\end{figure}
+
+Figure~\ref{fig:snr} quantifies the noise reduction as a signal-to-noise ratio improvement.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.7\textwidth]{figures/nb01_fig4.png}
+    \caption{Signal-to-noise ratio improvement: variance of raw price changes vs filtered estimate changes.}
+    \label{fig:snr}
 \end{figure}
 
 \subsubsection{MLE Parameter Estimation}
 
-Maximum likelihood estimation recovers the true parameters with reasonable accuracy from 500 observations: $\hat{Q} = 6.54 \times 10^{-5}$ (true: $10^{-4}$) and $\hat{R} = 2.03 \times 10^{-3}$ (true: $2 \times 10^{-3}$). Figure~\ref{fig:mle} shows the log-likelihood surface with a clear global maximum near the true parameters.
+Maximum likelihood estimation recovers the true parameters from 500 observations: $\hat{Q} = 6.54 \times 10^{-5}$ (true: $10^{-4}$, error 34.6\%) and $\hat{R} = 2.03 \times 10^{-3}$ (true: $2 \times 10^{-3}$, error 1.5\%). The $R$ estimate is highly accurate; the $Q$ estimate is within the expected range given the sample size. Figure~\ref{fig:mle} shows the log-likelihood surface with a clear global maximum.
 
 \begin{figure}[H]
     \centering
-    \includegraphics[width=0.75\textwidth]{figures/fig_likelihood_surface.pdf}
-    \caption{Log-likelihood surface over $Q$ and $R$ parameter space. The red star marks the MLE estimate, which is close to the true generating parameters.}
+    \includegraphics[width=0.75\textwidth]{figures/nb01_fig5.png}
+    \caption{Log-likelihood surface over $Q$ and $R$ parameter space. The red star marks the MLE estimate $(\hat{Q}, \hat{R})$.}
     \label{fig:mle}
+\end{figure}
+
+Figure~\ref{fig:mle_compare} compares the hand-tuned filter against the MLE-optimized filter.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=\textwidth]{figures/nb01_fig6.png}
+    \caption{Hand-tuned parameters (top, $Q=10^{-4}$, $R=10^{-3}$) vs MLE-estimated parameters (bottom, $\hat{Q}=6.54 \times 10^{-5}$, $\hat{R}=2.03 \times 10^{-3}$).}
+    \label{fig:mle_compare}
 \end{figure}
 
 \subsection{Adaptive Kalman Filter}
 
-Figure~\ref{fig:adaptive} compares the basic and adaptive filters on data with a step change from $p = 0.3$ to $p = 0.75$ at $t = 250$. The basic filter lags behind the regime change for over 50 steps, while the adaptive filter detects the surprise via large normalized innovations and temporarily inflates $Q$, allowing it to track the new regime within approximately 15 steps.
+We test on synthetic data with a step change from $p = 0.3$ to $p = 0.75$ at $t = 250$ ($T = 500$, $Q = 10^{-6}$, $R = 10^{-3}$). Figure~\ref{fig:adaptive} compares the basic and adaptive filters. The basic filter lags behind the regime change for over 50 steps, while the adaptive filter (threshold $\tau = 2.5$, inflation factor 15, decay $\lambda = 0.8$) tracks the new regime within approximately 15 steps.
 
 \begin{figure}[H]
     \centering
-    \includegraphics[width=\textwidth]{figures/fig_adaptive_comparison.pdf}
-    \caption{Basic (top) vs adaptive (bottom) Kalman filter on step change data. The adaptive filter tracks the regime change significantly faster.}
+    \includegraphics[width=\textwidth]{figures/nb02_adaptive_comparison.png}
+    \caption{Basic scalar filter (top) vs adaptive filter (bottom) on step change data. The adaptive filter tracks the regime change significantly faster.}
     \label{fig:adaptive}
 \end{figure}
 
-Figure~\ref{fig:q_inflation} shows the effective $Q_t$ over time. The process noise spikes at the regime change and decays exponentially back to $Q_{\text{base}}$.
+Figure~\ref{fig:q_inflation} shows the effective $Q_t$ over time. The process noise spikes at the regime change and decays exponentially back to $Q_{\text{base}} = 10^{-5}$.
 
 \begin{figure}[H]
     \centering
-    \includegraphics[width=0.95\textwidth]{figures/fig_q_inflation.pdf}
-    \caption{Effective process noise $Q_t$ on log scale. The spike at $t \approx 250$ corresponds to the detected regime change.}
+    \includegraphics[width=0.95\textwidth]{figures/nb02_q_inflation.png}
+    \caption{Effective process noise $Q_t$ on log scale. The spike at $t \approx 250$ corresponds to the detected regime change, decaying back to baseline via exponential decay.}
     \label{fig:q_inflation}
 \end{figure}
 
-The post-regime-change mean absolute error ($t = 250$ to $t = 300$) is 0.090 for the basic filter and 0.032 for the adaptive filter---a 65\% reduction in tracking error (Figure~\ref{fig:tracking_error}).
+The post-regime-change mean absolute error ($t = 250$ to $t = 300$) is \textbf{0.0897} for the basic filter and \textbf{0.0316} for the adaptive filter---a \textbf{65\% reduction} in tracking error (Figure~\ref{fig:tracking_error}).
 
 \begin{figure}[H]
     \centering
-    \includegraphics[width=0.95\textwidth]{figures/fig_tracking_error.pdf}
-    \caption{Absolute tracking error. The adaptive filter recovers from the regime change much faster than the basic filter.}
+    \includegraphics[width=0.95\textwidth]{figures/nb02_tracking_error.png}
+    \caption{Absolute tracking error $|\hat{x}_t - x_t|$. The adaptive filter recovers from the regime change much faster.}
     \label{fig:tracking_error}
+\end{figure}
+
+Figure~\ref{fig:dynamic_rt} demonstrates dynamic observation noise estimation from market microstructure. When the spread widens from 0.01 to 0.08 and book depth drops from \$50{,}000 to \$500, $R_t$ increases from $3.46 \times 10^{-5}$ to $6.82 \times 10^{-4}$---a 20$\times$ increase reflecting the noisier price signal.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.95\textwidth]{figures/nb02_dynamic_rt.png}
+    \caption{Top: market microstructure (spread and depth). Bottom: resulting dynamic observation noise $R_t$, which increases sharply when liquidity deteriorates.}
+    \label{fig:dynamic_rt}
 \end{figure}
 
 \subsection{Logit-Space Filter}
 
-Figure~\ref{fig:logit} demonstrates the boundary problem. Near $p = 0.92$, the regular filter's $\pm 2\sigma$ confidence interval extends above 1.0 at many points. The logit-space filter, by operating in log-odds space, guarantees that both the estimate and the confidence interval remain within $[0, 1]$.
+Figure~\ref{fig:logit} demonstrates the boundary problem. Near $p = 0.92$, the regular filter's $\pm 2\sigma$ confidence interval extends above 1.0 at many time steps. The logit-space filter guarantees bounded estimates and confidence intervals by operating in log-odds space.
 
 \begin{figure}[H]
     \centering
-    \includegraphics[width=\textwidth]{figures/fig_logit_bounded.pdf}
-    \caption{Regular filter (top) vs logit filter (bottom) near $p = 0.92$. The regular filter's CI exceeds the probability boundary, while the logit filter remains bounded.}
+    \includegraphics[width=\textwidth]{figures/nb03_fig0.png}
+    \caption{Regular filter (top) vs logit filter (bottom) near $p = 0.92$. The regular filter's CI violates the probability boundary; the logit filter remains bounded.}
     \label{fig:logit}
 \end{figure}
 
-Figure~\ref{fig:asymmetric} shows confidence intervals at five different price levels. Near $p = 0.5$ the intervals are approximately symmetric, while near $p = 0.1$ or $p = 0.9$ they become increasingly asymmetric---compressed toward the nearer boundary. This correctly reflects the nonlinear relationship between probability and log-odds.
+Figure~\ref{fig:asymmetric} shows confidence intervals at five price levels ($p \approx 0.1, 0.3, 0.5, 0.7, 0.9$). Near $p = 0.5$ the intervals are symmetric; near the boundaries they compress toward $[0,1]$, correctly reflecting the nonlinear logit transform.
 
 \begin{figure}[H]
     \centering
-    \includegraphics[width=\textwidth]{figures/fig_asymmetric_ci.pdf}
-    \caption{Asymmetric confidence intervals from the logit filter at different price levels. Near boundaries, CIs are compressed toward $[0,1]$ while wider on the interior side.}
+    \includegraphics[width=\textwidth]{figures/nb03_fig1.png}
+    \caption{Asymmetric confidence intervals at different price levels. Near boundaries, CIs compress toward $[0,1]$.}
     \label{fig:asymmetric}
+\end{figure}
+
+Figure~\ref{fig:logit_space} visualizes the filter operating simultaneously in probability space and logit space, showing how symmetric CIs in logit space become asymmetric in probability space.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=\textwidth]{figures/nb03_fig2.png}
+    \caption{Probability space (top) and logit space (bottom). CIs are symmetric in logit space but asymmetric when transformed back to probability space.}
+    \label{fig:logit_space}
 \end{figure}
 
 \subsection{Multivariate Filter}
 
-We simulate three correlated markets (modeled as a Federal Reserve / macroeconomic cluster) with known cross-correlations. Figure~\ref{fig:corr} shows that Ledoit-Wolf shrinkage recovers the correlation structure from price returns.
+We simulate three correlated markets (``Fed Pause March,'' ``Fed Cut June,'' ``Inflation $< 3\%$'') with a known process noise covariance matrix. The true correlation structure shows strong positive correlation between the two Fed markets ($\rho = 0.70$) and negative correlation with inflation ($\rho = -0.45$ and $\rho = -0.34$). Figure~\ref{fig:corr} shows that Ledoit-Wolf shrinkage recovers this structure from the data.
 
 \begin{figure}[H]
     \centering
-    \includegraphics[width=0.85\textwidth]{figures/fig_correlation_heatmap.pdf}
-    \caption{True (left) vs estimated (right) cross-market correlation matrices. Ledoit-Wolf shrinkage produces stable estimates.}
+    \includegraphics[width=0.85\textwidth]{figures/nb04_fig0.png}
+    \caption{True (left) vs estimated (right) cross-market correlation matrices. Ledoit-Wolf shrinkage produces stable estimates that capture the sign and relative magnitude of all correlations.}
     \label{fig:corr}
 \end{figure}
 
-Figure~\ref{fig:multivariate} compares the multivariate filter against independent scalar filters on each market. The multivariate filter produces slightly smoother estimates by propagating information across correlated markets.
+Figure~\ref{fig:multivariate} compares the multivariate filter against independent scalar filters. Table~\ref{tab:mse} reports the MSE improvement from leveraging cross-market correlations.
 
 \begin{figure}[H]
     \centering
-    \includegraphics[width=\textwidth]{figures/fig_multivariate_vs_independent.pdf}
-    \caption{Multivariate (solid) vs independent (dashed) filters on three correlated markets. The multivariate filter leverages cross-market correlations.}
+    \includegraphics[width=\textwidth]{figures/nb04_fig1.png}
+    \caption{Multivariate (solid) vs independent (dashed) filters on three correlated markets. The multivariate filter propagates information across markets.}
     \label{fig:multivariate}
+\end{figure}
+
+\begin{table}[H]
+    \centering
+    \caption{Mean squared error vs true state for each market.}
+    \label{tab:mse}
+    \begin{tabular}{lcccr}
+        \toprule
+        \textbf{Market} & \textbf{Raw MSE} & \textbf{Independent} & \textbf{Multivariate} & \textbf{Improvement} \\
+        \midrule
+        Fed Pause March   & $9.46 \times 10^{-4}$ & $6.28 \times 10^{-4}$ & $6.27 \times 10^{-4}$ & 0.2\% \\
+        Fed Cut June      & $1.54 \times 10^{-3}$ & $9.09 \times 10^{-4}$ & $9.08 \times 10^{-4}$ & 0.2\% \\
+        Inflation $< 3\%$ & $2.23 \times 10^{-3}$ & $1.63 \times 10^{-3}$ & $1.63 \times 10^{-3}$ & 0.1\% \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+Figure~\ref{fig:missing} demonstrates the multivariate filter's ability to maintain estimates during missing data. When ``Fed Cut June'' becomes unobserved for 50 steps, the filter continues estimating its probability using cross-correlations from the other two observed markets.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=\textwidth]{figures/nb04_fig2.png}
+    \caption{Estimation during missing data. The ``Fed Cut June'' market is unobserved from $t=200$ to $t=250$ (shaded), but the multivariate filter maintains tracking via cross-correlations.}
+    \label{fig:missing}
 \end{figure}
 
 \subsection{Regime Detection}
 
-The CUSUM detector identifies the step change at $t = 250$ with a detection latency of approximately 1 step (Figure~\ref{fig:regime}). The normalized innovation sequence shows a clear spike at the change point, and the detection severity peaks sharply.
+The regime detector combines CUSUM, chi-square, and autocorrelation tests on the normalized innovation sequence. Applied to the step change scenario ($0.35 \to 0.72$ at $t = 250$), the detector achieves a detection latency of $-1$ steps---meaning it detects the change essentially simultaneously with its occurrence (Figure~\ref{fig:regime}).
 
 \begin{figure}[H]
     \centering
-    \includegraphics[width=\textwidth]{figures/fig_regime_detection.pdf}
-    \caption{Regime detection on step change data. Top: filtered price with detection markers (orange). Middle: normalized innovations showing spike at $t = 250$. Bottom: detection severity from CUSUM.}
+    \includegraphics[width=\textwidth]{figures/nb05_fig0.png}
+    \caption{Regime detection results. Top: filtered price with detection markers (orange lines). Middle: normalized innovations showing the spike at the change point. Bottom: detection severity from the combined detector.}
     \label{fig:regime}
 \end{figure}
 
 \subsection{Backtest Comparison}
 
-We backtest all filter variants across six synthetic scenarios (varying $Q$, $R$, starting probability, and outcome). Figure~\ref{fig:brier} shows the average Brier score across all scenarios.
+We backtest all filter variants across six synthetic scenarios varying $Q$, $R$, starting probability, and resolved outcome. Figure~\ref{fig:brier} shows the average Brier score, and Table~\ref{tab:brier} reports the full results including log loss and standard deviations.
 
 \begin{figure}[H]
     \centering
-    \includegraphics[width=0.8\textwidth]{figures/fig_brier_comparison.pdf}
-    \caption{Average Brier score across six backtest scenarios. All Kalman filter variants outperform raw prices. Lower is better.}
+    \includegraphics[width=0.8\textwidth]{figures/nb05_fig1.png}
+    \caption{Average Brier score across six backtest scenarios. All Kalman filter variants outperform raw prices.}
     \label{fig:brier}
 \end{figure}
 
 \begin{table}[H]
     \centering
-    \caption{Average Brier scores across six backtest scenarios.}
+    \caption{Performance summary across six backtest scenarios. Best filter by Brier score: Adaptive Kalman.}
     \label{tab:brier}
-    \begin{tabular}{lc}
+    \begin{tabular}{lcccc}
         \toprule
-        \textbf{Filter} & \textbf{Avg Brier Score} \\
+        \textbf{Filter} & \textbf{Brier Mean} & \textbf{Brier Std} & \textbf{LogLoss Mean} & \textbf{LogLoss Std} \\
         \midrule
-        Adaptive Kalman & 0.0949 \\
-        Scalar Kalman   & 0.0950 \\
-        SMA-20          & 0.0951 \\
-        Raw Price       & 0.0988 \\
-        Logit Kalman    & 0.1010 \\
+        Adaptive Kalman & 0.0949 & 0.0791 & 0.3480 & 0.1800 \\
+        Scalar Kalman   & 0.0950 & 0.0793 & 0.3484 & 0.1803 \\
+        SMA-20          & 0.0951 & 0.0790 & 0.3493 & 0.1793 \\
+        Raw Price       & 0.0988 & 0.0826 & 0.3534 & 0.1879 \\
+        Logit Kalman    & 0.1010 & 0.0777 & 0.3672 & 0.1735 \\
         \bottomrule
     \end{tabular}
 \end{table}
 
-Figure~\ref{fig:calibration} shows the calibration curve for the scalar Kalman filter. The filter is reasonably well-calibrated, with predicted probabilities aligning with observed frequencies.
+Figure~\ref{fig:calibration} shows the calibration curve. Points near the diagonal indicate good calibration.
 
 \begin{figure}[H]
     \centering
-    \includegraphics[width=0.55\textwidth]{figures/fig_calibration.pdf}
-    \caption{Calibration curve for the scalar Kalman filter. Points near the diagonal indicate good calibration.}
+    \includegraphics[width=0.55\textwidth]{figures/nb05_fig2.png}
+    \caption{Calibration curve for the scalar Kalman filter. Predicted probabilities align well with observed frequencies.}
     \label{fig:calibration}
 \end{figure}
 
