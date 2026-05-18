@@ -1,0 +1,55 @@
+services:
+  db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: forensics
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./scripts/init_db.sql:/docker-entrypoint-initdb.d/01_init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  backend:
+    build:
+      context: ./backend
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/forensics
+      ALCHEMY_API_KEY: ${ALCHEMY_API_KEY:-}
+      TRADE_POLL_INTERVAL: ${TRADE_POLL_INTERVAL:-60}
+      SCORING_INTERVAL: ${SCORING_INTERVAL:-300}
+      CLUSTER_INTERVAL: ${CLUSTER_INTERVAL:-900}
+      RESOLUTION_INTERVAL: ${RESOLUTION_INTERVAL:-3600}
+      LARGE_TRADE_USD: ${LARGE_TRADE_USD:-5000}
+      INSIDER_TRACE_THRESHOLD: ${INSIDER_TRACE_THRESHOLD:-0.3}
+      FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:5173}
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+      - ./scripts:/app/scripts
+      - ./data:/app/data
+
+  frontend:
+    image: node:20-alpine
+    working_dir: /app
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
+    environment:
+      VITE_API_URL: http://localhost:8000
+      VITE_WS_URL: ws://localhost:8000
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend:/app
+
+volumes:
+  pgdata:
