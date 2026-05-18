@@ -1,18 +1,23 @@
+"""Search routes."""
+
+from __future__ import annotations
+
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from api.schemas import MarketResponse, SearchResponse, WalletResponse
 from data.database import get_db
 from data.models import Market, Wallet
 
 router = APIRouter(prefix="/search", tags=["search"])
 
 
-@router.get("")
+@router.get("", response_model=SearchResponse)
 async def search(
-    q: str = Query(..., min_length=2),
+    q: str = Query(..., min_length=2, max_length=128),
     db: AsyncSession = Depends(get_db),
-) -> dict:
+) -> SearchResponse:
     needle = f"%{q.lower()}%"
 
     wres = await db.execute(
@@ -24,13 +29,6 @@ async def search(
             )
         ).limit(20)
     )
-    wallets = [{
-        "address": w.address,
-        "ens_name": w.ens_name,
-        "insider_score": float(w.insider_score or 0),
-        "classification": w.classification,
-    } for w in wres.scalars()]
-
     mres = await db.execute(
         select(Market).where(
             or_(
@@ -39,11 +37,8 @@ async def search(
             )
         ).limit(20)
     )
-    markets = [{
-        "id": m.id,
-        "question": m.question,
-        "category": m.category,
-        "status": m.status,
-    } for m in mres.scalars()]
 
-    return {"wallets": wallets, "markets": markets}
+    return SearchResponse(
+        wallets=[WalletResponse.model_validate(w) for w in wres.scalars()],
+        markets=[MarketResponse.model_validate(m) for m in mres.scalars()],
+    )

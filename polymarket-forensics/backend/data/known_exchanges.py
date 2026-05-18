@@ -56,4 +56,7 @@ KNOWN_ADDRESSES: dict[str, dict[str, str]] = {
 
 
 def lookup_address(address: str) -> dict[str, str] | None:
+    """Case-insensitive lookup against the curated address registry."""
+    if not address:
+        return None
     return KNOWN_ADDRESSES.get(address.lower())

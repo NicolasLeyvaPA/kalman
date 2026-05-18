@@ -1,0 +1,72 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "polymarket-forensics"
+version = "1.0.0"
+description = "On-chain forensic intelligence for Polymarket."
+requires-python = ">=3.11"
+readme = "README.md"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+src = ["backend", "scripts", "tests"]
+extend-exclude = ["frontend"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",   # pycodestyle
+    "F",        # pyflakes
+    "I",        # isort
+    "N",        # pep8-naming
+    "UP",       # pyupgrade
+    "B",        # bugbear
+    "SIM",      # simplify
+    "ASYNC",    # async best practices
+    "RUF",      # ruff-specific
+]
+ignore = [
+    "E501",     # line length handled by formatter
+    "B008",     # function call in default args (FastAPI Depends idiom)
+    "N806",     # variable name in function should be lowercase (we have ZERO/ONE constants)
+    "SIM117",   # nested context managers — sometimes clearer to keep them split
+    "SIM105",   # contextlib.suppress is stylistic; try/except/pass is fine
+    "UP042",    # str+Enum mixin — Pydantic serialization works better than StrEnum
+    "RUF005",   # `[*a, *b]` vs `a + b` — both are fine
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["N802", "N803"]
+"scripts/*" = ["E402"]
+"backend/scripts/*" = ["E402"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.mypy]
+python_version = "3.11"
+files = ["backend"]
+mypy_path = "backend"
+strict_optional = true
+warn_unused_ignores = true
+warn_return_any = true
+no_implicit_optional = true
+disallow_untyped_defs = false   # backend has decorators that defeat full strictness
+ignore_missing_imports = true   # scipy and a few others ship without stubs
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = ["scoring.*", "chain.*", "utils.*", "enums", "exceptions"]
+disallow_untyped_defs = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+filterwarnings = [
+    "ignore::DeprecationWarning:asyncio",
+    "ignore::DeprecationWarning:websockets",
+]

@@ -1,12 +1,15 @@
+"""Attribute resolved markets back to the trades they cover.
+
+For each newly-resolved market:
+  1. Update the market row with status + outcome + resolved_at.
+  2. For every trade in that market that hasn't been attributed yet,
+     compute win/loss, PnL (net of fees), and hours-before-resolution.
 """
-For all recently-resolved markets, attribute trades to win/loss and PnL.
-"""
+
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta, timezone
 from decimal import Decimal
-from typing import Any
 
 from sqlalchemy import select, update
 
@@ -14,30 +17,27 @@ from config import get_settings
 from data.database import db_session
 from data.models import Market, Trade
 from data.polymarket_client import get_polymarket
+from exceptions import ExternalAPIError
 from utils.logging import get_logger
+from utils.time import to_utc
 
-
-def _to_dt(value: Any) -> datetime | None:
-    if value is None:
-        return None
-    if isinstance(value, datetime):
-        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
-    if isinstance(value, (int, float)):
-        return datetime.fromtimestamp(value, tz=timezone.utc)
-    if isinstance(value, str):
-        try:
-            return datetime.fromisoformat(value.replace("Z", "+00:00"))
-        except Exception:
-            return None
-    return None
-
-log = get_logger("resolution")
+log = get_logger(__name__)
 settings = get_settings()
+
+# Polymarket fee: 2% on winning side
+WINNING_FEE = Decimal("0.02")
+ZERO = Decimal("0")
+ONE = Decimal("1")
+EPS = Decimal("0.000001")
 
 
 async def _refresh_markets() -> int:
     poly = await get_polymarket()
-    markets = await poly.list_markets(limit=200, active=False)
+    try:
+        markets = await poly.list_markets(limit=200, active=False)
+    except ExternalAPIError as exc:
+        log.warning("resolution_markets_failed", status=exc.status)
+        return 0
     n = 0
     async with db_session() as session:
         for m in markets:
@@ -47,7 +47,7 @@ async def _refresh_markets() -> int:
             outcome = m.get("resolvedOutcome")
             if not m.get("closed") or not outcome:
                 continue
-            resolved_at = _to_dt(
+            resolved_at = to_utc(
                 m.get("resolvedDate") or m.get("endDate") or m.get("updatedAt")
             )
             await session.execute(
@@ -61,11 +61,23 @@ async def _refresh_markets() -> int:
     return n
 
 
+def _compute_pnl(side: str, outcome: str, resolution: str,
+                 size: Decimal, price: Decimal) -> tuple[bool, Decimal]:
+    """Return (trade_won, net_pnl)."""
+    won = (side.upper() == "BUY" and outcome.upper() == resolution.upper())
+    if won:
+        gross = size * (ONE - price) / max(price, EPS)
+        net = gross * (ONE - WINNING_FEE)
+        return True, net
+    return False, -size
+
+
 async def _attribute_trades() -> int:
     async with db_session() as session:
         res = await session.execute(
             select(Market).where(
-                (Market.status == "resolved") & Market.resolution_outcome.is_not(None)
+                (Market.status == "resolved")
+                & Market.resolution_outcome.is_not(None)
             )
         )
         markets = list(res.scalars())
@@ -75,30 +87,26 @@ async def _attribute_trades() -> int:
         async with db_session() as session:
             trades_res = await session.execute(
                 select(Trade).where(
-                    (Trade.market_id == market.id) & (Trade.trade_won.is_(None))
+                    (Trade.market_id == market.id)
+                    & (Trade.trade_won.is_(None))
                 )
             )
             trades = list(trades_res.scalars())
             for t in trades:
-                won = (t.side.upper() == "BUY"
-                       and t.outcome.upper() == (market.resolution_outcome or "").upper())
-                price = float(t.price)
-                size = float(t.size)
-                if won:
-                    pnl = size * (1.0 - price) / max(price, 1e-6)
-                else:
-                    pnl = -size
-
-                hbr = None
+                won, pnl = _compute_pnl(
+                    t.side, t.outcome, market.resolution_outcome or "",
+                    Decimal(t.size), Decimal(t.price),
+                )
+                hbr: Decimal | None = None
                 if market.resolved_at and t.timestamp:
-                    hbr = max(0.0, (market.resolved_at - t.timestamp).total_seconds() / 3600.0)
-
+                    delta = market.resolved_at - t.timestamp
+                    hbr = Decimal(max(0, delta.total_seconds())) / Decimal("3600")
                 await session.execute(
                     update(Trade).where(Trade.id == t.id).values(
                         resolution_outcome=market.resolution_outcome,
                         trade_won=won,
-                        pnl=Decimal(str(pnl)),
-                        hours_before_resolution=Decimal(str(hbr)) if hbr is not None else None,
+                        pnl=pnl,
+                        hours_before_resolution=hbr,
                     )
                 )
                 total += 1
@@ -108,18 +116,20 @@ async def _attribute_trades() -> int:
 async def run_once() -> dict[str, int]:
     refreshed = await _refresh_markets()
     attributed = await _attribute_trades()
-    return {"resolved_markets": refreshed, "trades_attributed": attributed}
+    stats = {"resolved_markets": refreshed, "trades_attributed": attributed}
+    log.info("resolution_done", **stats)
+    return stats
 
 
 async def run_loop(stop_event: asyncio.Event) -> None:
     interval = settings.resolution_interval
+    log.info("resolution_loop_start", interval_sec=interval)
     while not stop_event.is_set():
         try:
-            stats = await run_once()
-            log.info("resolution: %s", stats)
-        except Exception as exc:
-            log.exception("resolution loop error: %s", exc)
+            await run_once()
+        except Exception:
+            log.exception("resolution_loop_error")
         try:
             await asyncio.wait_for(stop_event.wait(), timeout=interval)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             pass
