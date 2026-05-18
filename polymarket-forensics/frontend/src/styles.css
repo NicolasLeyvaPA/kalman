@@ -1,0 +1,83 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    color-scheme: dark;
+  }
+
+  body {
+    background-color: #0a0a0a;
+    color: #e0e0e0;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    font-feature-settings: 'cv02', 'cv03', 'cv04';
+  }
+
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  ::-webkit-scrollbar-track {
+    background: #0a0a0a;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #222;
+    border-radius: 4px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: #333;
+  }
+}
+
+@layer components {
+  .card {
+    @apply bg-bg-card border border-border rounded-md;
+  }
+  .card-hover {
+    @apply transition-colors hover:bg-bg-hover hover:border-text-dim;
+  }
+  .pill {
+    @apply px-1.5 py-0.5 text-[10px] uppercase tracking-wider rounded border;
+  }
+  .pill-green {
+    @apply pill border-neon-green/40 text-neon-green bg-neon-green/5;
+  }
+  .pill-yellow {
+    @apply pill border-neon-yellow/40 text-neon-yellow bg-neon-yellow/5;
+  }
+  .pill-orange {
+    @apply pill border-neon-orange/40 text-neon-orange bg-neon-orange/5;
+  }
+  .pill-red {
+    @apply pill border-neon-red/40 text-neon-red bg-neon-red/5;
+  }
+  .pill-cyan {
+    @apply pill border-neon-cyan/40 text-neon-cyan bg-neon-cyan/5;
+  }
+  .pill-purple {
+    @apply pill border-neon-purple/40 text-neon-purple bg-neon-purple/5;
+  }
+  .btn {
+    @apply px-3 py-1 text-xs uppercase tracking-wider border border-border
+           rounded hover:bg-bg-hover hover:border-text-dim transition-colors;
+  }
+  .btn-primary {
+    @apply btn border-neon-orange/60 text-neon-orange hover:bg-neon-orange/10;
+  }
+}
+
+.live-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #00ff41;
+  box-shadow: 0 0 8px #00ff41;
+  animation: pulse 2s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
