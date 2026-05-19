@@ -4,8 +4,8 @@ Volume / timing anomaly detection.
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Iterable
 from datetime import datetime, timedelta
-from typing import Iterable
 
 
 def detect_volume_spike(

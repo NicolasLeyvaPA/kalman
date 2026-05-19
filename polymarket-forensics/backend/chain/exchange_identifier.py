@@ -1,17 +1,15 @@
-"""
-Identify whether an address belongs to a known exchange or bridge.
-"""
+"""Identify whether an address belongs to a known exchange or bridge."""
+
+from __future__ import annotations
+
 from data.known_exchanges import lookup_address
 
 
 def identify(address: str) -> tuple[str | None, str | None]:
-    """
-    Returns (category, label) for a known address, or (None, None) if unknown.
+    """Return ``(category, label)`` for a known address, else ``(None, None)``.
 
-    Category is one of:
-      - "exchange:coinbase" / "exchange:binance" / ...
-      - "bridge:polygon-pos" / ...
-      - "contract:polymarket"
+    Category format: ``"exchange:coinbase"``, ``"bridge:polygon-pos"``,
+    ``"contract:polymarket"``.
     """
     if not address:
         return None, None

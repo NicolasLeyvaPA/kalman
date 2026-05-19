@@ -1,60 +1,96 @@
+"""Recursive funding-chain tracer.
+
+Walks backwards from a target wallet to find original sources of capital
+— exchanges, bridges, or other wallets. Stops at exchanges/bridges/contracts
+or when depth limit is reached.
 """
-Recursive funding-chain tracer. Walks backwards from a wallet to find
-the original sources of capital — exchanges, bridges, or other wallets.
-"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
-from typing import Optional
+from datetime import UTC, datetime
+from decimal import Decimal, InvalidOperation
 
-from chain.alchemy_client import AlchemyClient
 from chain.address_classifier import classify_address
+from chain.alchemy_client import AlchemyClient
+from enums import SourceType
+from exceptions import ExternalAPIError
+from utils.logging import get_logger
+
+log = get_logger(__name__)
 
 
-@dataclass
+@dataclass(frozen=True)
 class FundingHop:
-    wallet_address: str          # target wallet (the root we started from)
+    """One edge of the funding tree."""
+
+    wallet_address: str        # target wallet the trace started from
     source_address: str
-    source_type: str              # exchange | bridge | contract | wallet | unknown
-    source_exchange: Optional[str]
-    amount: float
+    source_type: SourceType
+    source_exchange: str | None
+    amount: Decimal
     asset: str
-    timestamp: Optional[datetime]
+    timestamp: datetime | None
     tx_hash: str
     depth: int
 
 
-def _parse_ts(meta: dict | None) -> Optional[datetime]:
-    if not meta:
+def _parse_amount(value: object) -> Decimal:
+    if value is None:
+        return Decimal("0")
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        log.debug("funding_tracer_bad_amount", value=value)
+        return Decimal("0")
+
+
+def _parse_ts(meta: object) -> datetime | None:
+    if not isinstance(meta, dict):
         return None
-    bt = meta.get("blockTimestamp")
-    if not bt:
+    raw = meta.get("blockTimestamp")
+    if not raw or not isinstance(raw, str):
         return None
     try:
-        return datetime.fromisoformat(bt.replace("Z", "+00:00"))
-    except Exception:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00")).astimezone(UTC)
+    except (TypeError, ValueError):
+        log.debug("funding_tracer_bad_timestamp", value=raw)
         return None
 
 
 async def trace_funding_chain(
     wallet_address: str,
     alchemy: AlchemyClient,
+    *,
     max_depth: int = 3,
     max_per_hop: int = 25,
 ) -> list[FundingHop]:
-    """
-    BFS-style trace. At each address we fetch incoming transfers, classify
-    each source, and recurse into anything that looks like a regular wallet
-    until we hit an exchange, a bridge, a contract, or max_depth.
+    """BFS-style trace of incoming funds.
+
+    Args:
+        wallet_address: 0x-prefixed Polygon address. Lower-cased internally.
+        alchemy:        Alchemy client instance.
+        max_depth:      How many hops backwards to walk before stopping.
+        max_per_hop:    Cap on transfers fetched at each address.
+
+    Returns:
+        List of ``FundingHop`` records, one per incoming transfer discovered
+        across all walks. Empty list if the wallet has no incoming USDC/MATIC.
+
+    Notes:
+        - Exchanges, bridges, and contracts are terminal — we never recurse
+          past them (they aren't user-controlled).
+        - A wallet seen more than once is skipped to avoid cycles.
     """
     target = wallet_address.lower()
     visited: set[str] = set()
     hops: list[FundingHop] = []
+    queue: list[tuple[str, int]] = [(target, 0)]
 
-    async def walk(addr: str, depth: int) -> None:
+    while queue:
+        addr, depth = queue.pop(0)
         if depth > max_depth or addr in visited:
-            return
+            continue
         visited.add(addr)
 
         try:
@@ -64,37 +100,33 @@ async def trace_funding_chain(
                 order="desc",
                 max_count=max_per_hop,
             )
-        except Exception:
-            return
+        except ExternalAPIError as exc:
+            log.warning("funding_tracer_alchemy_error",
+                        address=addr, depth=depth,
+                        service=exc.service, status=exc.status)
+            continue
 
         for tx in transfers:
             src = (tx.get("from") or "").lower()
             if not src:
                 continue
-            cls = await classify_address(src, alchemy)
-            stype = cls["type"]
-            sexc = cls["exchange"] or None
-
-            value = tx.get("value")
-            try:
-                amount = float(value) if value is not None else 0.0
-            except (TypeError, ValueError):
-                amount = 0.0
+            classification = await classify_address(src, alchemy)
+            stype = SourceType(classification["type"])
+            sexc = classification["exchange"] or None
 
             hops.append(FundingHop(
                 wallet_address=target,
                 source_address=src,
                 source_type=stype,
                 source_exchange=sexc,
-                amount=amount,
+                amount=_parse_amount(tx.get("value")),
                 asset=(tx.get("asset") or "").upper() or "UNKNOWN",
                 timestamp=_parse_ts(tx.get("metadata")),
                 tx_hash=tx.get("hash", ""),
                 depth=depth,
             ))
 
-            if stype == "wallet" and depth < max_depth:
-                await walk(src, depth + 1)
+            if stype == SourceType.WALLET and depth < max_depth:
+                queue.append((src, depth + 1))
 
-    await walk(target, 0)
     return hops

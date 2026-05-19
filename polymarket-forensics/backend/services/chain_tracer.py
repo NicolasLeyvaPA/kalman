@@ -1,55 +1,89 @@
+"""On-demand chain-tracing worker.
+
+Wallets are enqueued when they cross the insider trace threshold, when an
+operator clicks "Trace" in the UI, or when a large trade arrives from a
+brand-new wallet. The worker pops one address at a time, walks the funding
+chain, and persists every hop.
 """
-On-demand chain-tracer service. A coroutine queue: wallets are enqueued
-when they cross the insider trace threshold or when the operator requests
-a manual trace from the UI.
-"""
+
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
-from decimal import Decimal
 
-from sqlalchemy import select, delete, update
+from sqlalchemy import delete, select, update
 
 from chain.alchemy_client import get_alchemy
 from chain.funding_tracer import trace_funding_chain
 from config import get_settings
 from data.database import db_session
 from data.models import FundingChain, Wallet
+from enums import SourceType
+from exceptions import AlchemyConfigError, ExternalAPIError
 from utils.logging import get_logger
 
-log = get_logger("tracer")
+log = get_logger(__name__)
 settings = get_settings()
 
 _queue: asyncio.Queue[str] = asyncio.Queue(maxsize=1000)
-_seen_recent: set[str] = set()
+_recent_ttl: dict[str, float] = {}
+_RECENT_TTL_SEC = 3600
+_TRACE_NEEDS_CLUSTERS = asyncio.Event()
+
+
+def _prune_recent() -> None:
+    cutoff = asyncio.get_event_loop().time() - _RECENT_TTL_SEC
+    stale = [k for k, ts in _recent_ttl.items() if ts < cutoff]
+    for k in stale:
+        _recent_ttl.pop(k, None)
 
 
 async def enqueue(address: str) -> None:
+    """Add a wallet to the trace queue. No-op if traced recently."""
     addr = address.lower()
-    if addr in _seen_recent:
+    loop = asyncio.get_event_loop()
+    _prune_recent()
+    if addr in _recent_ttl:
         return
-    _seen_recent.add(addr)
-    if len(_seen_recent) > 5000:
-        _seen_recent.clear()
+    _recent_ttl[addr] = loop.time()
     try:
         _queue.put_nowait(addr)
     except asyncio.QueueFull:
-        log.warning("trace queue full, dropping %s", addr)
+        log.warning("trace_queue_full", dropped=addr)
+
+
+def needs_clustering() -> bool:
+    """Reset and return whether new traces have been added since last clear."""
+    if _TRACE_NEEDS_CLUSTERS.is_set():
+        _TRACE_NEEDS_CLUSTERS.clear()
+        return True
+    return False
 
 
 async def _trace_and_store(address: str) -> int:
-    alchemy = await get_alchemy()
-    if not alchemy.api_key:
-        log.warning("ALCHEMY_API_KEY not set, skipping trace")
+    try:
+        alchemy = await get_alchemy()
+    except Exception:
+        log.exception("trace_alchemy_init_failed", wallet=address)
         return 0
+    if not alchemy.api_key:
+        log.warning("trace_skipped_no_key", wallet=address)
+        return 0
+
     try:
         hops = await trace_funding_chain(address, alchemy, max_depth=3, max_per_hop=25)
-    except Exception as exc:
-        log.warning("trace failed for %s: %s", address, exc)
+    except AlchemyConfigError as exc:
+        log.warning("trace_config_error", wallet=address, error=exc.message)
+        return 0
+    except ExternalAPIError as exc:
+        log.warning("trace_external_error",
+                    wallet=address, status=exc.status, service=exc.service)
+        return 0
+    except Exception:
+        log.exception("trace_unexpected_error", wallet=address)
         return 0
 
     if not hops:
+        log.info("trace_empty", wallet=address)
         return 0
 
     async with db_session() as session:
@@ -62,15 +96,17 @@ async def _trace_and_store(address: str) -> int:
             session.add(FundingChain(
                 wallet_address=h.wallet_address,
                 source_address=h.source_address,
-                source_type=h.source_type,
+                source_type=h.source_type.value,
                 source_exchange=h.source_exchange,
-                amount=Decimal(str(h.amount)) if h.amount else None,
+                amount=h.amount if h.amount else None,
                 asset=h.asset,
                 timestamp=h.timestamp,
                 tx_hash=h.tx_hash,
                 depth=h.depth,
             ))
-            if h.depth == 0 and h.source_type == "exchange" and primary_exchange is None:
+            if (h.depth == 0
+                    and h.source_type == SourceType.EXCHANGE
+                    and primary_exchange is None):
                 primary_exchange = h.source_exchange
                 primary_source = h.source_address
 
@@ -81,18 +117,23 @@ async def _trace_and_store(address: str) -> int:
             )
         )
 
+    _TRACE_NEEDS_CLUSTERS.set()
+    log.info("trace_complete", wallet=address, hops=len(hops),
+             exchange=primary_exchange)
     return len(hops)
 
 
 async def run_worker(stop_event: asyncio.Event) -> None:
+    log.info("trace_worker_start")
     while not stop_event.is_set():
         try:
             address = await asyncio.wait_for(_queue.get(), timeout=2.0)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             continue
-        n = await _trace_and_store(address)
-        log.info("traced %s: %d hops", address, n)
-        _queue.task_done()
+        try:
+            await _trace_and_store(address)
+        finally:
+            _queue.task_done()
 
 
 async def enqueue_high_score_wallets() -> int:
